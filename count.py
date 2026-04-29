@@ -197,45 +197,137 @@ class MultiBranchModule(nn.Module):
         outputs = [branch1x1, branch3x3, branch3x3dbl, x]
         return torch.cat(outputs, 1)
 
-class BasicConv2d(nn.Module):
+class BasicConv2d(nn.Module):import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.models as models
 
-    def __init__(self, in_channels, out_channels, sync=False, **kwargs):
-        super(BasicConv2d, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, bias=False, **kwargs)
-        if sync:
-            print('use sync inception')
-            self.bn = nn.SyncBatchNorm(out_channels, eps=0.001)
+# ===== MODEL COMPONENTS =====
+class Conv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size,
+                 stride=1, NL='relu', same_padding=False, bn=False, dilation=1):
+        super().__init__()
+        padding = (kernel_size - 1) // 2 if same_padding else 0
+        if dilation == 1:
+            self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding=padding)
         else:
-            self.bn = nn.BatchNorm2d(out_channels, eps=0.001)
+            self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding=dilation, dilation=dilation)
+
+        self.bn = nn.BatchNorm2d(out_channels) if bn else nn.Identity()
+
+        if NL == 'relu':
+            self.relu = nn.ReLU(inplace=True)
+        elif NL == 'prelu':
+            self.relu = nn.PReLU()
+        else:
+            self.relu = None
 
     def forward(self, x):
         x = self.conv(x)
         x = self.bn(x)
-        return F.relu(x, inplace=True)
-    
+        if self.relu is not None:
+            x = self.relu(x)
+        return x
 
-def count(img):
 
-    model = SASNet(pretrained=False)
-    model.load_state_dict(torch.load("final_model_sasnet_scratch.pth", map_location="cpu"))
-    model.eval()
+class BasicConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, **kwargs):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, bias=False, **kwargs)
+        self.bn = nn.BatchNorm2d(out_channels)
 
-    img = cv2.imread(img)
+    def forward(self, x):
+        return F.relu(self.bn(self.conv(x)), inplace=True)
 
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    img = cv2.resize(img, (512, 512))
+class MultiBranchModule(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.branch1x1 = BasicConv2d(in_channels, in_channels//2, kernel_size=1)
+        self.branch1x1_1 = BasicConv2d(in_channels//2, in_channels, kernel_size=1)
 
-    img = img / 255.0
-    img = (img - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
+        self.branch3x3 = BasicConv2d(in_channels, in_channels//2, kernel_size=1)
+        self.branch3x3_2 = BasicConv2d(in_channels//2, in_channels, kernel_size=3, padding=1)
 
-    img = np.transpose(img, (2, 0, 1))
+        self.branch5x5 = BasicConv2d(in_channels, in_channels//2, kernel_size=1)
+        self.branch5x5_2 = BasicConv2d(in_channels//2, in_channels, kernel_size=5, padding=2)
 
-    img = torch.tensor(img, dtype=torch.float32).unsqueeze(0)
+    def forward(self, x):
+        b1 = self.branch1x1_1(self.branch1x1(x))
+        b2 = self.branch3x3_2(self.branch3x3(x))
+        b3 = self.branch5x5_2(self.branch5x5(x))
+        return torch.cat([b1, b2, b3, x], 1)
 
+
+class SASNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        vgg = models.vgg16_bn(pretrained=False)
+        features = list(vgg.features.children())
+
+        self.features1 = nn.Sequential(*features[0:6])
+        self.features2 = nn.Sequential(*features[6:13])
+        self.features3 = nn.Sequential(*features[13:23])
+        self.features4 = nn.Sequential(*features[23:33])
+        self.features5 = nn.Sequential(*features[33:43])
+
+        self.de_pred5 = nn.Sequential(
+            Conv2d(512, 1024, 3, same_padding=True),
+            Conv2d(1024, 512, 3, same_padding=True),
+        )
+
+        self.de_pred4 = nn.Sequential(
+            Conv2d(1024, 512, 3, same_padding=True),
+            Conv2d(512, 256, 3, same_padding=True),
+        )
+
+        self.de_pred3 = nn.Sequential(
+            Conv2d(512, 256, 3, same_padding=True),
+            Conv2d(256, 128, 3, same_padding=True),
+        )
+
+        self.de_pred2 = nn.Sequential(
+            Conv2d(256, 128, 3, same_padding=True),
+            Conv2d(128, 64, 3, same_padding=True),
+        )
+
+        self.de_pred1 = nn.Sequential(
+            Conv2d(128, 64, 3, same_padding=True),
+            Conv2d(64, 64, 3, same_padding=True),
+        )
+
+        self.output_layer = nn.Conv2d(64, 1, kernel_size=1)
+
+    def forward(self, x):
+        x1 = self.features1(x)
+        x2 = self.features2(x1)
+        x3 = self.features3(x2)
+        x4 = self.features4(x3)
+        x5 = self.features5(x4)
+
+        x = self.de_pred5(x5)
+        x = F.interpolate(x, size=x4.shape[2:], mode="bilinear", align_corners=False)
+        x = self.de_pred4(torch.cat([x4, x], 1))
+
+        x = F.interpolate(x, size=x3.shape[2:], mode="bilinear", align_corners=False)
+        x = self.de_pred3(torch.cat([x3, x], 1))
+
+        x = F.interpolate(x, size=x2.shape[2:], mode="bilinear", align_corners=False)
+        x = self.de_pred2(torch.cat([x2, x], 1))
+
+        x = F.interpolate(x, size=x1.shape[2:], mode="bilinear", align_corners=False)
+        x = self.de_pred1(torch.cat([x1, x], 1))
+
+        x = self.output_layer(x)
+        return x
+ 
+
+model = SASNet()
+model.load_state_dict(torch.load("final_model_sasnet_scratch.pth", map_location="cpu", weights_only=False))
+model.eval()
+
+
+def predict_count(img_tensor):
     with torch.no_grad():
-        output = model(img)
-
-    count = output.sum().item()
-
-    print("Predicted people count:", count)
+        output = model(img_tensor)
+    return float(output.sum().item())

@@ -1,17 +1,16 @@
-from count import count
-import torch
-import numpy as np
-import cv2
 from fastapi import FastAPI, File, UploadFile
 from PIL import Image
+import numpy as np
+import torch
+import cv2
 import io
 
+from count import predict_count
 
 app = FastAPI()
 
 LATEST_IMAGE_PATH = "latest.jpg"
 latest_count = None
-
 
 def preprocess(image_bytes):
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -27,22 +26,18 @@ def preprocess(image_bytes):
 
     return img
 
-
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     global latest_count
 
     contents = await file.read()
 
-    # Save latest image (overwrite)
     with open(LATEST_IMAGE_PATH, "wb") as f:
         f.write(contents)
 
     img = preprocess(contents)
 
-    output = count(img)
-
-    latest_count = float(output.sum().item())
+    latest_count = predict_count(img)
 
     return {
         "status": "processed",
