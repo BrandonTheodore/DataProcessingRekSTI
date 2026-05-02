@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import cv2
 import io
+import time
 
 from count import predict_count
 
@@ -80,6 +81,23 @@ def get_latest_image():
         LATEST_IMAGE_PATH,
         media_type="image/jpeg"
     )
+def generate_frames():
+    global latest_frame
+
+    while True:
+        if latest_frame is None:
+            time.sleep(0.1)
+            continue
+
+        _, buffer = cv2.imencode(".jpg", latest_frame)
+        frame_bytes = buffer.tobytes()
+
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+        )
+
+        time.sleep(0.1)
 
 @app.get("/video")
 def video_feed():
