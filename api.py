@@ -1,5 +1,5 @@
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from torchvision import transforms
 from PIL import Image
 import numpy as np
@@ -37,21 +37,26 @@ def preprocess(image_bytes):
 
     return img_tensor
 
+frame_counter = 0
+PROCESS_EVERY = 25 
+
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
-    global latest_count
+    global latest_count, frame_counter
 
     contents = await file.read()
 
     with open(LATEST_IMAGE_PATH, "wb") as f:
         f.write(contents)
 
-    img = preprocess(contents)
+    frame_counter += 1
 
-    latest_count = predict_count(img)
+    if frame_counter % PROCESS_EVERY == 0:
+        img = preprocess(contents)
+        latest_count = predict_count(img)
 
     return {
-        "status": "processed",
+        "status": "ok",
         "count": latest_count
     }
 
@@ -74,4 +79,11 @@ def get_latest_image():
     return FileResponse(
         LATEST_IMAGE_PATH,
         media_type="image/jpeg"
+    )
+
+@app.get("/video")
+def video_feed():
+    return StreamingResponse(
+        generate_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
     )
