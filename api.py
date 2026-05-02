@@ -82,14 +82,14 @@ def get_latest_image():
         media_type="image/jpeg"
     )
 def generate_frames():
-    global latest_frame
+    global LATEST_IMAGE_PATH
 
     while True:
-        if latest_frame is None:
+        if LATEST_IMAGE_PATH is None:
             time.sleep(0.1)
             continue
 
-        _, buffer = cv2.imencode(".jpg", latest_frame)
+        _, buffer = cv2.imencode(".jpg", LATEST_IMAGE_PATH)
         frame_bytes = buffer.tobytes()
 
         yield (
