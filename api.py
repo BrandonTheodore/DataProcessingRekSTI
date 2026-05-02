@@ -81,23 +81,30 @@ def get_latest_image():
         LATEST_IMAGE_PATH,
         media_type="image/jpeg"
     )
+
 def generate_frames():
     global LATEST_IMAGE_PATH
 
     while True:
-        if LATEST_IMAGE_PATH is None:
+        try:
+            frame = cv2.imread(LATEST_IMAGE_PATH)
+
+            if frame is None:
+                time.sleep(0.1)
+                continue
+
+            _, buffer = cv2.imencode(".jpg", frame)
+            frame_bytes = buffer.tobytes()
+
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+            )
+
             time.sleep(0.1)
+
+        except Exception:
             continue
-
-        _, buffer = cv2.imencode(".jpg", LATEST_IMAGE_PATH)
-        frame_bytes = buffer.tobytes()
-
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
-        )
-
-        time.sleep(0.1)
 
 @app.get("/video")
 def video_feed():
